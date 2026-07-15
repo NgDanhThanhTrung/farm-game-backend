@@ -16,10 +16,14 @@ connectDB();
 
 // Khởi tạo cấu hình mặc định hệ thống nếu chưa tồn tại trong DB
 (async () => {
-  const config = await SystemConfig.findOne({ key: 'main_config' });
-  if (!config) {
-    await SystemConfig.create({ key: 'main_config' });
-    console.log('[SystemConfig] Initialized default configurations.');
+  try {
+    const config = await SystemConfig.findOne({ key: 'main_config' });
+    if (!config) {
+      await SystemConfig.create({ key: 'main_config' });
+      console.log('[SystemConfig] Initialized default configurations.');
+    }
+  } catch (err) {
+    console.error('Error initializing SystemConfig:', err);
   }
 })();
 
@@ -36,31 +40,35 @@ app.post('/api/claim-ads-reward', verifyTelegramWebappData, async (req, res) => 
     
     // Đọc cấu hình kinh tế hiện tại từ Database
     const config = await SystemConfig.findOne({ key: 'main_config' });
+    if (!config) {
+      return res.status(500).json({ error: 'System configuration not found.' });
+    }
     
     // Tính toán phần thưởng kinh tế theo công thức quy định: 
-    // Reward = (ecpmRate / 1000) * (userSharePercentage / 100) * usdToDiamondRate
     const rewardDiamonds = (config.ecpmRate / 1000) * (config.userSharePercentage / 100) * config.usdToDiamondRate;
     
-    // 1. Thực hiện cộng thưởng Kim Cương từ Ads cho chính User
+    // Cộng thưởng Kim Cương trực tiếp cho chính User
     user.diamonds += rewardDiamonds;
 
-    // 2. Xử lý logic Hệ thống giới thiệu chống Cheat (Anti-Cheat Referral System)
+    // CHỐNG CHEAT & RACE CONDITION REFERRAL:
     if (user.referredBy && !user.isReferralActive) {
-      // Xác định đây là lượt xem quảng cáo hợp lệ đầu tiên của người được giới thiệu (B)
+      // Đánh dấu cờ kích hoạt ngay lập tức trước khi lưu để chặn các luồng request đồng thời
       user.isReferralActive = true;
-      user.gold += 200; // Cộng tiền chào mừng cho người được giới thiệu B (200 Vàng)
+      user.gold += 200; // Thưởng chào mừng cho người được giới thiệu (B)
 
-      // Tìm người giới thiệu (A) để trả thưởng kích hoạt
-      const referrer = await User.findOne({ telegramId: user.referredBy });
+      // Tìm và cập nhật nguyên tử (Atomic Update) tài khoản của người mời (A) để tránh xung đột ghi đè
+      const referrer = await User.findOneAndUpdate(
+        { telegramId: user.referredBy },
+        { $inc: { gold: 500 } },
+        { new: true }
+      );
+
       if (referrer) {
-        referrer.gold += 500; // Cộng tiền thưởng kích hoạt cho Referrer A (500 Vàng)
-        await referrer.save();
-
-        // Dùng Bot Telegram gửi tin nhắn realtime thông báo tức thì cho Người giới thiệu A
+        // Sử dụng Bot Telegram để thông báo tức thì cho Người mời (A)
         try {
           await bot.telegram.sendMessage(
             referrer.telegramId,
-            `🎉 Người bạn giới thiệu (@${user.username || 'ẩn danh'}) đã kích hoạt thành công! Bạn nhận được +500 Vàng.`
+            `🎉 Chúc mừng! Người bạn giới thiệu (@${user.username || 'ẩn danh'}) đã hoạt động thành công.\n💰 Bạn nhận được +500 Vàng thưởng!`
           );
         } catch (botErr) {
           console.error(`Không thể gửi tin nhắn Telegram tới Referrer ${referrer.telegramId}:`, botErr.message);
@@ -115,7 +123,7 @@ app.get('/api/admin/config', verifyTelegramWebappData, isAdmin, async (req, res)
   }
 });
 
-// POST: Cập nhật cấu hình kinh tế Game (Thay đổi tỷ giá eCPM, User Share...)
+// POST: Cập nhật cấu hình kinh tế Game
 app.post('/api/admin/config', verifyTelegramWebappData, isAdmin, async (req, res) => {
   try {
     const { ecpmRate, userSharePercentage, usdToDiamondRate } = req.body;
@@ -138,7 +146,6 @@ app.post('/api/admin/broadcast', verifyTelegramWebappData, isAdmin, async (req, 
 
     const allUsers = await User.find({}, 'telegramId');
     
-    // Thực hiện gửi tin nhắn bất đồng bộ, sử dụng cơ chế delay 50ms mỗi vòng lặp
     let successCount = 0;
     for (const targetUser of allUsers) {
       try {
@@ -147,7 +154,7 @@ app.post('/api/admin/broadcast', verifyTelegramWebappData, isAdmin, async (req, 
       } catch (err) {
         console.error(`Broadcast thất bại tới ID ${targetUser.telegramId}:`, err.message);
       }
-      // Tránh vi phạm giới hạn HTTP API của Telegram (max 30 messages per second)
+      // Tránh vi phạm giới hạn gửi API của Telegram (Max 30 tin nhắn mỗi giây)
       await new Promise(resolve => setTimeout(resolve, 50)); 
     }
 
@@ -169,7 +176,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`[Express Server] API Running on port ${PORT}`);
   
-  // Khởi chạy Telegraf Bot song song với HTTP Web Server
   bot.launch()
     .then(() => console.log('[Telegram Bot] Bot long-polling initialized successfully.'))
     .catch((err) => console.error('[Telegram Bot] Error launching bot:', err));
