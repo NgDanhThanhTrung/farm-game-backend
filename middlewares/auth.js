@@ -15,20 +15,31 @@ const verifyTelegramWebappData = async (req, res, next) => {
     const urlParams = new URLSearchParams(initData);
     const hash = urlParams.get('hash');
     
-    // Sắp xếp các tham số theo bảng chữ cái alphabet để tạo data-check-string
-    const dataCheckArr = [];
-    urlParams.sort();
+    if (!hash) {
+      return res.status(401).json({ error: 'Unauthorized: Missing Hash.' });
+    }
+
+    // GOM VÀ SẮP XẾP CHUẨN:
+    // Đưa tất cả các cặp key=value (ngoại trừ hash) vào mảng, sau đó mới sort mảng này
+    const dataParams = [];
     for (const [key, value] of urlParams.entries()) {
       if (key !== 'hash') {
-        dataCheckArr.push(`${key}=${value}`);
+        dataParams.push(`${key}=${value}`);
       }
     }
-    const dataCheckString = dataCheckArr.join('\n');
+    dataParams.sort(); // Sắp xếp theo bảng chữ cái
+    const dataCheckString = dataParams.join('\n');
+
+    const botToken = process.env.BOT_TOKEN;
+    if (!botToken) {
+      console.error('[Auth Error]: BOT_TOKEN is not configured in environment.');
+      return res.status(500).json({ error: 'Internal Server Error: Bot token missing.' });
+    }
 
     // Tạo Secret Key từ Bot Token
     const secretKey = crypto
       .createHmac('sha256', 'WebAppData')
-      .update(process.env.BOT_TOKEN || '')
+      .update(botToken)
       .digest();
 
     // Tính toán hash cục bộ để so sánh chống giả mạo chữ ký
@@ -48,14 +59,15 @@ const verifyTelegramWebappData = async (req, res, next) => {
     }
 
     const tgUser = JSON.parse(userRaw);
+    const tgIdStr = String(tgUser.id);
     
     // Tìm hoặc khởi tạo User trong Database để đính kèm vào payload req
-    let user = await User.findOne({ telegramId: String(tgUser.id) });
+    let user = await User.findOne({ telegramId: tgIdStr });
     if (!user) {
       user = await User.create({
-        telegramId: String(tgUser.id),
+        telegramId: tgIdStr,
         username: tgUser.username || '',
-        isAdmin: String(tgUser.id) === process.env.ADMIN_TELEGRAM_ID
+        isAdmin: tgIdStr === process.env.ADMIN_TELEGRAM_ID
       });
     }
 
