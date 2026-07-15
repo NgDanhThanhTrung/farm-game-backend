@@ -23,27 +23,42 @@ bot.use((ctx, next) => {
 bot.start(async (ctx) => {
   try {
     const tgId = String(ctx.from.id);
-    const username = ctx.from.username || '';
-    const payload = ctx.payload; // Lấy tham số ref từ link t.me/bot?start=XXXX
+    const username = ctx.from.username || ctx.from.first_name || 'Khaithacvien';
+    const payload = ctx.payload; // Lấy tham số ref từ link t.me/bot?start=ref_XXXX
 
     let user = await User.findOne({ telegramId: tgId });
     
     if (!user) {
-      const isSelfReferral = payload && String(payload) === tgId;
-      const referrerExists = payload ? await User.findOne({ telegramId: String(payload) }) : null;
+      let referredBy = null;
+
+      // FIX LỖI DEEP-LINK: Cắt bỏ tiền tố "ref_" để lấy chính xác Telegram ID của người mời
+      if (payload && payload.startsWith('ref_')) {
+        const referrerId = payload.replace('ref_', '').trim();
+        const isSelfReferral = referrerId === tgId;
+        const referrerExists = await User.findOne({ telegramId: referrerId });
+
+        if (referrerExists && !isSelfReferral) {
+          referredBy = referrerId;
+        }
+      }
 
       user = new User({
         telegramId: tgId,
         username: username,
         isAdmin: tgId === process.env.ADMIN_TELEGRAM_ID,
-        // Chỉ ghi nhận giới thiệu nếu hợp lệ và không tự ref chính mình
-        referredBy: (payload && referrerExists && !isSelfReferral) ? String(payload) : null,
-        isReferralActive: false // Luôn luôn là false cho tới khi hoàn thành nhiệm vụ xem ads đầu tiên
+        referredBy: referredBy,
+        isReferralActive: false // Luôn ở trạng thái CHỜ kích hoạt quảng cáo lần đầu
       });
       await user.save();
+      
+      let welcomeMsg = `Chào mừng ${username} đến với Nông Trại Farm Game! 🌾\nSử dụng các lệnh /checkin hoặc /spin để nhận quà hàng ngày.`;
+      if (referredBy) {
+        welcomeMsg += `\n\n🔗 Bạn đã được mời bởi người chơi có ID: ${referredBy}. Hãy mở game trên Webview và xem 1 lượt Quảng cáo để nhận quà liên kết cho cả hai!`;
+      }
+      ctx.reply(welcomeMsg);
+    } else {
+      ctx.reply(`Chào mừng quay trở lại, ${username}! Hãy tiếp tục thu hoạch nông trại của bạn.`);
     }
-
-    ctx.reply(`Welcome ${username} đến với Nông Trại Farm Game! 🌾\nSử dụng các lệnh /checkin hoặc /spin để nhận quà hàng ngày.`);
   } catch (err) {
     console.error('Bot /start error:', err);
   }
@@ -85,7 +100,7 @@ bot.command('spin', async (ctx) => {
       return ctx.reply('🎰 Bạn đã hết lượt quay miễn phí hôm nay! Hãy quay lại sau 00:00.');
     }
 
-    // Tính toán tỷ lệ trúng thưởng
+    // Tính toán tỷ lệ trúng thưởng ở backend
     const rand = Math.random() * 100;
     let rewardMessage = '';
 
